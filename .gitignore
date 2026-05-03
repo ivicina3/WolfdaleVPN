@@ -1,0 +1,10 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment files
+venv/
+.env
+
+# Local client state
+vpn_client_state.json
