@@ -49,14 +49,29 @@ python server.py --host 0.0.0.0 --port 5000
 
 ## Описание API
 
-- `POST /api/v1/sessions/connect` — создать VPN-сессию
+- `POST /api/v1/sessions/connect` — создать VPN-сессию и получить VPN-IP
 - `POST /api/v1/sessions/disconnect` — завершить VPN-сессию
 - `GET /api/v1/sessions` — список активных сессий
 - `GET /api/v1/sessions/<session_id>` — подробности сессии
 - `GET /api/v1/servers` — доступные VPN-серверы
 - `GET /api/v1/health` — проверка работоспособности
 
-## Пример пользователя
+## Команды клиента
 
-- Логин: `user1`
-- Пароль: `password123`
+- `connect` — подключиться к VPN и получить VPN-IP адрес
+- `disconnect` — отключиться от VPN
+- `vpn-ip` — показать текущий VPN-IP адрес (из локального состояния)
+- `show` — показать всё локальное состояние клиента
+- `servers` — список доступных серверов
+- `list` — список всех сессий на сервере
+- `health` — проверить здоровье сервера
+
+## Как использовать
+
+После подключения VPN-IP автоматически сохраняется в локальное состояние:
+
+```bash
+python client.py connect --username user1 --password password123 --server us-east
+python client.py vpn-ip
+python client.py disconnect
+```
