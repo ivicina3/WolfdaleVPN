@@ -1,8 +1,9 @@
 import argparse
+import os
 import requests
 import sys
 
-API_BASE = "http://127.0.0.1:5000/api/v1"
+API_BASE = os.environ.get("WOLFDALEVPN_SERVER_URL", "http://127.0.0.1:5000")
 
 
 def request_json(method, path, json=None):
@@ -79,6 +80,11 @@ def cmd_list(args):
 
 def main():
     parser = argparse.ArgumentParser(description="VPN API client")
+    parser.add_argument(
+        "--server-url",
+        default=os.environ.get("WOLFDALEVPN_SERVER_URL", "http://127.0.0.1:5000"),
+        help="Remote VPN API server URL (example: http://vpn.example.com:5000)",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("health", help="Check server health")
@@ -97,6 +103,9 @@ def main():
     session.add_argument("--session-id", required=True, help="Session ID")
 
     args = parser.parse_args()
+    global API_BASE
+    API_BASE = args.server_url.rstrip("/") + "/api/v1"
+
     if args.command == "health":
         cmd_health(args)
     elif args.command == "servers":

@@ -27,6 +27,26 @@ python client.py session --session-id <ID>
 python client.py disconnect --session-id <ID>
 ```
 
+### Удалённое подключение
+
+Если сервер запущен на удалённой машине или домене, укажите URL сервера:
+
+```bash
+python client.py --server-url http://vpn.example.com:5000 connect --username user1 --password password123 --server us-east
+```
+
+Или настройте домен, который резолвится на удалённый сервер, и используйте его:
+
+```bash
+python client.py --server-url https://myvpn.example.com connect --username user1 --password password123 --server us-east
+```
+
+Если сервер запускается локально на публичном интерфейсе, укажите хост при старте:
+
+```bash
+python server.py --host 0.0.0.0 --port 5000
+```
+
 ## Описание API
 
 - `POST /api/v1/sessions/connect` — создать VPN-сессию
