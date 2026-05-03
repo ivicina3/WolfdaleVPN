@@ -1,109 +1,214 @@
-from flask import Flask, jsonify, request
-from uuid import uuid4
 from datetime import datetime
+import ipaddress
+import secrets
+import subprocess
+from pathlib import Path
+
+from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 
-VPN_SERVERS = [
-    {"id": "us-east", "location": "US East", "ip": "192.168.100.1"},
-    {"id": "eu-central", "location": "EU Central", "ip": "192.168.100.2"},
-    {"id": "asia-south", "location": "Asia South", "ip": "192.168.100.3"},
-]
+clients = {}
+tunnels = {}
+next_vpn_address = ipaddress.IPv4Address("10.8.0.2")
 
-sessions = {}
-
-VALID_USERS = {
-    "user1": "password123",
-    "admin": "adminpass",
-}
+WG_CONFIG_DIR = Path("wireguard-configs")
+WG_CONFIG_DIR.mkdir(exist_ok=True)
 
 
-def make_response(status, data=None, message=None, code=200):
-    payload = {"status": status}
-    if data is not None:
-        payload["data"] = data
-    if message is not None:
-        payload["message"] = message
-    return jsonify(payload), code
+def allocate_vpn_address():
+    global next_vpn_address
+    vpn_address = str(next_vpn_address)
+    next_vpn_address += 1
+    return vpn_address
 
 
-@app.route("/api/v1/health", methods=["GET"])
-def health_check():
-    return make_response("ok", {"time": datetime.utcnow().isoformat() + "Z"})
+def get_bearer_token():
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header.split(" ", 1)[1].strip()
+    return None
 
 
-@app.route("/api/v1/servers", methods=["GET"])
-def list_servers():
-    return make_response("ok", {"servers": VPN_SERVERS})
+def find_client_by_token(token):
+    for client in clients.values():
+        if client["token"] == token:
+            return client
+    return None
 
 
-@app.route("/api/v1/sessions", methods=["GET"])
-def list_sessions():
-    return make_response("ok", {"sessions": list(sessions.values())})
+def generate_wg_keys():
+    try:
+        private_key = subprocess.run(["wg", "genkey"], capture_output=True, text=True, check=True).stdout.strip()
+        public_key = subprocess.run(["wg", "pubkey"], input=private_key, text=True, capture_output=True, check=True).stdout.strip()
+        return private_key, public_key
+    except subprocess.CalledProcessError:
+        raise RuntimeError("WireGuard tools not available. Install wireguard-tools.")
 
 
-@app.route("/api/v1/sessions/<session_id>", methods=["GET"])
-def get_session(session_id):
-    session = sessions.get(session_id)
-    if not session:
-        return make_response("error", message="Session not found", code=404)
-    return make_response("ok", {"session": session})
+def build_client_wg_config(client_private_key, server_public_key, client_vpn_ip, server_public_ip, server_port=51820):
+    return f"""[Interface]
+PrivateKey = {client_private_key}
+Address = {client_vpn_ip}/32
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = {server_public_key}
+Endpoint = {server_public_ip}:{server_port}
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+"""
 
 
-@app.route("/api/v1/sessions/connect", methods=["POST"])
-def connect():
-    payload = request.get_json(force=True, silent=True)
-    if not payload:
-        return make_response("error", message="JSON payload required", code=400)
+@app.route("/api/register", methods=["POST"])
+def register_client():
+    data = request.get_json(silent=True) or {}
+    name = data.get("name")
+    if not name:
+        return jsonify({"error": "Client name is required"}), 400
 
-    username = payload.get("username")
-    password = payload.get("password")
-    server_id = payload.get("server_id")
-
-    if not username or not password or not server_id:
-        return make_response("error", message="username, password and server_id are required", code=400)
-
-    expected_password = VALID_USERS.get(username)
-    if expected_password != password:
-        return make_response("error", message="Invalid username or password", code=401)
-
-    target_server = next((s for s in VPN_SERVERS if s["id"] == server_id), None)
-    if not target_server:
-        return make_response("error", message="Unknown server_id", code=404)
-
-    session_id = str(uuid4())
-    session = {
-        "session_id": session_id,
-        "username": username,
-        "server_id": server_id,
-        "server": target_server,
-        "status": "connected",
-        "assigned_ip": f"10.8.0.{len(sessions) + 10}",
+    client_id = secrets.token_hex(8)
+    token = secrets.token_urlsafe(24)
+    clients[client_id] = {
+        "id": client_id,
+        "name": name,
+        "token": token,
         "created_at": datetime.utcnow().isoformat() + "Z",
-        "updated_at": datetime.utcnow().isoformat() + "Z",
+        "last_seen": None,
+        "status": "registered",
+        "vpn_address": None,
     }
-    sessions[session_id] = session
 
-    return make_response("ok", {"session": session}, message="VPN session connected")
+    return jsonify({
+        "client_id": client_id,
+        "token": token,
+        "message": "VPN client registered successfully",
+    }), 201
 
 
-@app.route("/api/v1/sessions/disconnect", methods=["POST"])
-def disconnect():
-    payload = request.get_json(force=True, silent=True)
-    if not payload:
-        return make_response("error", message="JSON payload required", code=400)
+@app.route("/api/vpn-config", methods=["POST"])
+def vpn_config():
+    token = get_bearer_token()
+    client = find_client_by_token(token)
+    if client is None:
+        return jsonify({"error": "Unauthorized"}), 401
 
-    session_id = payload.get("session_id")
-    if not session_id:
-        return make_response("error", message="session_id is required", code=400)
+    if client["vpn_address"] is None:
+        client["vpn_address"] = allocate_vpn_address()
+        tunnels[client["id"]] = {
+            "client_id": client["id"],
+            "vpn_address": client["vpn_address"],
+            "network": "10.8.0.0/24",
+            "dns": "10.8.0.1",
+            "routes": ["0.0.0.0/0"],
+            "pre_shared_key": secrets.token_urlsafe(16),
+            "created_at": datetime.utcnow().isoformat() + "Z",
+        }
 
-    session = sessions.get(session_id)
-    if not session:
-        return make_response("error", message="Session not found", code=404)
+    client["last_seen"] = datetime.utcnow().isoformat() + "Z"
+    client["status"] = "configured"
 
-    session["status"] = "disconnected"
-    session["updated_at"] = datetime.utcnow().isoformat() + "Z"
-    return make_response("ok", {"session": session}, message="VPN session disconnected")
+    return jsonify({
+        "client_id": client["id"],
+        "vpn_address": client["vpn_address"],
+        "network": tunnels[client["id"]]["network"],
+        "dns": tunnels[client["id"]]["dns"],
+        "routes": tunnels[client["id"]]["routes"],
+        "pre_shared_key": tunnels[client["id"]]["pre_shared_key"],
+    })
+
+
+@app.route("/api/wireguard-config", methods=["POST"])
+def wireguard_config():
+    token = get_bearer_token()
+    client = find_client_by_token(token)
+    if client is None:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    server_public_ip = data.get("server_public_ip")
+    server_port = data.get("server_port", 51820)
+
+    if not server_public_ip:
+        return jsonify({"error": "server_public_ip is required"}), 400
+
+    try:
+        client_private_key, client_public_key = generate_wg_keys()
+        server_private_key, server_public_key = generate_wg_keys()
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
+
+    client_vpn_ip = client.get("vpn_address") or allocate_vpn_address()
+    client["vpn_address"] = client_vpn_ip
+
+    client_config = build_client_wg_config(client_private_key, server_public_key, client_vpn_ip, server_public_ip, server_port)
+
+    # Save server config for admin
+    server_config = f"""[Interface]
+Address = 10.8.0.1/24
+ListenPort = {server_port}
+PrivateKey = {server_private_key}
+SaveConfig = true
+PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+
+[Peer]
+PublicKey = {client_public_key}
+AllowedIPs = {client_vpn_ip}/32
+"""
+
+    server_config_path = WG_CONFIG_DIR / f"server-{client['id']}.conf"
+    server_config_path.write_text(server_config)
+
+    return jsonify({
+        "client_config": client_config,
+        "server_config_path": str(server_config_path),
+        "message": "WireGuard configs generated. Apply server config manually.",
+    })
+
+
+@app.route("/api/status", methods=["POST"])
+def update_status():
+    token = get_bearer_token()
+    client = find_client_by_token(token)
+    if client is None:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    status = data.get("status")
+    if not status:
+        return jsonify({"error": "status field is required"}), 400
+
+    client["status"] = status
+    client["last_seen"] = datetime.utcnow().isoformat() + "Z"
+
+    return jsonify({"message": "Status updated", "client": client})
+
+
+@app.route("/api/clients", methods=["GET"])
+def list_clients():
+    return jsonify({"clients": list(clients.values())})
+
+
+@app.route("/api/disconnect", methods=["POST"])
+def disconnect_client():
+    token = get_bearer_token()
+    client = find_client_by_token(token)
+    if client is None:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    client["status"] = "disconnected"
+    client["last_seen"] = datetime.utcnow().isoformat() + "Z"
+
+    if client["id"] in tunnels:
+        del tunnels[client["id"]]
+
+    return jsonify({"message": "Client disconnected", "client_id": client["id"]})
+
+
+@app.route("/api/ping", methods=["GET"])
+def ping():
+    return jsonify({"message": "WolfdaleVPN API is alive"})
 
 
 if __name__ == "__main__":

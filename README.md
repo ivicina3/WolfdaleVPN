@@ -44,10 +44,16 @@ python client.py --server-url http://<PUBLIC_IP>:5000 connect --username user1 -
 
 ## WireGuard
 
-Генерация реального WireGuard-конфига:
+Генерация реального WireGuard-конфига (запускайте на сервере, где установлен WireGuard):
 
 ```bash
 python wireguard_setup.py --public-ip <PUBLIC_IP_OR_DOMAIN> --client-name client1
+```
+
+Или получить конфигурацию через API (автоматически):
+
+```bash
+python client.py wg-config --server-public-ip <PUBLIC_IP> --connect
 ```
 
 Затем на сервере:
@@ -60,8 +66,26 @@ sudo wg-quick up wg0
 На клиенте:
 
 ```bash
-sudo wg-quick up client-client1
+sudo wg-quick up wg-client1.conf
 ```
+
+### Копирование конфигурации с сервера на клиент
+
+Если сервер на Ubuntu, а клиент на Windows/Linux/Mac, используйте SCP (через SSH):
+
+На клиенте (в терминале или PowerShell):
+
+```bash
+scp user@server_ip:/path/to/wireguard-configs/client-client1.conf .
+```
+
+Или, если у вас есть SSH-доступ:
+
+```bash
+scp ubuntu@your-server-ip:~/WolfdaleVPN/wireguard-configs/client-client1.conf .
+```
+
+Затем импортируйте файл в WireGuard-приложение на клиенте.
 
 ## Важно
 

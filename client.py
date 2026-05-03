@@ -125,13 +125,36 @@ def cmd_show_state(args):
     print(json.dumps(state, indent=2))
 
 
-def cmd_vpn_ip(args):
+def cmd_wireguard_config(args):
     state = load_state()
-    vpn_ip = state.get("vpn_ip")
-    if not vpn_ip:
-        print("No VPN IP assigned. Connect to VPN first.")
-        return
-    print(f"Your VPN IP address: {vpn_ip}")
+    token = state.get("token")
+    if not token:
+        raise SystemExit("Client is not registered. Run 'register' first.")
+
+    payload = {
+        "server_public_ip": args.server_public_ip,
+        "server_port": args.server_port or 51820,
+    }
+    data = request_json("POST", "/api/wireguard-config", json_data=payload)
+
+    client_config = data["client_config"]
+    config_path = Path(f"wg-{state['name']}.conf")
+    config_path.write_text(client_config, encoding="utf-8")
+
+    print(f"WireGuard config saved to {config_path}")
+    print("To connect automatically, run: wg-quick up " + str(config_path))
+
+    # Optional: auto-connect if --connect flag
+    if args.connect:
+        try:
+            import subprocess
+            result = subprocess.run(["wg-quick", "up", str(config_path)], capture_output=True, text=True)
+            if result.returncode == 0:
+                print("WireGuard connected successfully!")
+            else:
+                print(f"Failed to connect: {result.stderr}")
+        except FileNotFoundError:
+            print("wg-quick not found. Install WireGuard and try again.")
 
 
 def main():
@@ -161,6 +184,11 @@ def main():
     subparsers.add_parser("show", help="Show saved client state")
     subparsers.add_parser("vpn-ip", help="Show your current VPN IP address")
 
+    wg_config = subparsers.add_parser("wg-config", help="Get WireGuard config from server")
+    wg_config.add_argument("--server-public-ip", required=True, help="Public IP of the WireGuard server")
+    wg_config.add_argument("--server-port", type=int, default=51820, help="WireGuard port")
+    wg_config.add_argument("--connect", action="store_true", help="Automatically connect after getting config")
+
     args = parser.parse_args()
     global BASE_URL
     BASE_URL = args.server_url.rstrip("/")
@@ -181,6 +209,8 @@ def main():
         cmd_show_state(args)
     elif args.command == "vpn-ip":
         cmd_vpn_ip(args)
+    elif args.command == "wg-config":
+        cmd_wireguard_config(args)
     else:
         parser.print_help()
 
