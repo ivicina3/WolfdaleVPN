@@ -8,3 +8,6 @@ venv/
 
 # Local client state
 vpn_client_state.json
+
+# WireGuard generated configs
+wireguard-configs/
